@@ -1,0 +1,238 @@
+
+import numpy as np
+import scipy.linalg as la
+import matplotlib.pyplot as plt
+import math
+
+# --- 1. PHYSICAL CONSTANTS (SI Units) ---
+q = 1.602e-19           # C
+hbar = 1.055e-34        # J*s
+m0 = 9.109e-31           # kg
+m_eff = 0.2 * m0         # kg (GaN effective mass)
+eps0 = 8.854e-12         # F/m
+# epsilon = 8.9 * eps0     # F/m (GaN permittivity)
+kB = 1.381e-23           # J/K
+T = 300                  # K
+
+
+al_mole = 0.15;
+
+
+# Number of subbands assumed
+n_sb=5;
+
+def a(al_mole):
+  return -0.077*al_mole*1e-10+3.189*1e-10
+
+def E_g(al_mole):
+   return 6.13*al_mole+3.42*(1-al_mole)-al_mole*(1-al_mole); #eV
+
+def eps(al_mole):
+  return ( 9.5 - 0.5*al_mole ) * eps0   ;  # F/m
+
+def P_sp(al_mole):
+  return -0.052*al_mole-0.029;
+
+def P_pe(al_mole):
+  e31= -0.11*al_mole-0.49;
+  e33= 0.73*al_mole+0.73;
+  C13= (50*al_mole+70)*1e9;
+  C33= (16*al_mole+379)*1e9;
+
+  return 2.0*(a(0)-a(al_mole))*(e31 - (e33*C13/C33) )/a(al_mole);
+
+def Sigma(al_mole):
+  return abs(P_sp(al_mole) +P_pe(al_mole) - P_sp(0)); 
+
+def n0(al_mole):
+ return (2.9*al_mole-0.0893)*1e13*1e4;
+def Ed(al_mole):
+ return (2*al_mole+0.42)*q;
+
+# Extracted data for Ni/AlGaN/GaN (m=0.1)
+n0_Ni= 0.15e13*1e4; #0.1*1e13*1e4;
+Ed_Ni=0.0148*q; #0.211*q; 
+
+# def get_n_s(Phi_B):
+#  return (Phi_B-Ed_SiN/q) * (n0_SiN);
+
+# Variable
+X_AlGaN = 25e-9;
+
+# --- 2. GRID SETTING ({X}nm AlGaN / 500nm GaN) ---
+N = 1000                 # Expanded grid density to resolve the large 520nm space
+x = np.linspace(-X_AlGaN, 500e-9, N) # Interface at x=0
+h = x[1] - x[0]          # Positive distance step size
+
+# --- 3. MOLE-DEPENDENT PARAMETERS (Al = al_mole*100%)\\\ ---
+
+
+# Parameter 1: CB Offset (0.28 eV for 20% Al)
+# V_offset = (1.4 * al_mole) * q  # Joules
+V_offset = 0.63*(E_g(al_mole)-E_g(0)) *q # Joules
+Delta_Ec = np.zeros(N)
+Delta_Ec[x < 0] = V_offset
+
+E_g_profile = np.zeros(N)
+E_g_profile[x <= 0]  = E_g(al_mole)
+E_g_profile[x > 0]  = E_g(0)
+
+epsilon = np.zeros(N);
+epsilon[x <= 0]  = eps(al_mole);
+epsilon[x > 0]  = eps(0);
+
+
+# Parameter 2: Meaningful Mole-Dependent Polarization Charge
+# For x = 0.2, sheet charge density is ~ 6.6e12 cm^-2
+# sigma_sheet_cm2 = 6.6e12  
+# rho_pol = (sigma_sheet_cm2 * 1e4 * q) * (1.0 / (0.5e-9 * np.sqrt(np.pi))) * np.exp(-np.square(x / 0.5e-9))
+rho_pol = Sigma(al_mole) * (1.0 / (0.5e-9 * np.sqrt(np.pi))) * np.exp(-np.square(x / 0.5e-9))
+
+# Parameter 3: Proper Fermi Level Energy
+# Set EF to a realistic reference level relative to the flat bulk conduction band (0 eV reference)
+E_Fermi = -0.15 * q      # EF sits 0.15 eV below the bulk conduction band edge
+
+# --- 4. INITIALIZATION ---
+
+
+# Iterative loops configuration
+max_iter = 1000
+SP_tolerance = 1e-5;         
+SPSS_tolerance = 5e-3;
+mixing_factor = 0.015    # Lowered mixing to stabilize the much wider 500nm GaN channel
+
+Phi_B0= 1.2815 # (in eV) initial guess
+
+def calculate_ns(Phi_B):
+  phi = np.zeros(N)        # Electrostatic potential initial guess
+  dos_2d = (m_eff * kB * T) / (np.pi * (hbar**2)) # 2D DOS (m^-2)
+# --- 5. THE SP SELF-CONSISTENT ITERATIVE LOOP ---
+  for iteration2 in range(max_iter):
+
+      
+      # --- STEP A: SCHRÖDINGER MATRIX CONFIGURATION ---
+      t = (hbar**2) / (2 * m_eff * (h**2))
+      V_total = Delta_Ec - q * phi
+      
+      diag = 2 * t + V_total
+      off_diag = -t * np.ones(N - 1)
+      
+      # Solve tridiagonal system for the quantum states
+      E_joules, psi = la.eigh_tridiagonal(diag, off_diag)
+      psi = psi / np.sqrt(h) # Continuity normalization
+      
+      # --- STEP B: POPULATION CALCULATION (n_sb Subbands) ---
+      E_sub = E_joules[:n_sb]
+      psi_sub = psi[:, :n_sb]
+      
+      # Protected exponential evaluation
+      # E_Fermi1 = -get_n_s(Phi_B)*q/dos_2d;  # TODO Test this function
+      # E_Fermi = -0.15 * q;
+      # print('E_Fermi1, E_Fermi, E_sub: ', E_Fermi1, E_Fermi, E_sub)
+      exponent_argument = (E_Fermi - E_sub) / (kB * T)
+      exponent_argument = np.clip(exponent_argument, -100, 100)
+      N_sub = dos_2d * np.log(1 + np.exp(exponent_argument))
+      
+      # Total accumulated volumetric quantum distribution n(x)
+      n_vol = np.zeros(N)
+      for i in range(n_sb):
+          n_vol += N_sub[i] * np.square(psi_sub[:, i])
+          
+      # --- STEP C: TRADITIONAL POISSON SOLVER ---
+      A = np.zeros((N, N))
+      b = np.zeros(N)
+      
+      for i in range(1, N - 1):
+          eps_mid_left = (epsilon[i-1] + epsilon[i]) / 2.0
+          eps_mid_right = (epsilon[i] + epsilon[i+1]) / 2.0
+          #A[i, i - 1] = 1 / (h**2)
+          #A[i, i]     = -2 / (h**2)
+          #A[i, i + 1] = 1 / (h**2)
+          #b[i]        = (q * n_vol[i] - rho_pol[i]) / epsilon
+          A[i, i - 1] = eps_mid_left / (h**2);
+          A[i, i]     = -(eps_mid_left + eps_mid_right) / (h**2);
+          A[i, i + 1] = eps_mid_right / (h**2);
+          b[i]        = q * n_vol[i] - rho_pol[i];
+
+          
+      # Dirichlet boundaries: Left surface boundary and deep bulk right side set to 0
+      A[0, 0] = 1.0
+      b[0]    = -Phi_B-0.9
+      A[-1, -1] = 1.0
+      b[-1]   = 0.0
+      
+      phi_new = la.solve(A, b)
+      
+      # --- STEP D: CONVERGENCE & MIXING ---
+      max_diff = np.max(np.abs(phi_new - phi))
+      if max_diff < SP_tolerance:
+          print(f"--> SP loop converged successfully at iteration {iteration2}! Residual Change: {max_diff:.2e} V")
+          break
+          
+      phi = (1 - mixing_factor) * phi + mixing_factor * phi_new
+      
+      #if iteration2 % 50 == 0:
+      #    print(f"Iteration {iteration2:03d} | Max Delta V: {max_diff:.4f} V | E0: {E_sub[0]/q:.3f} eV")
+
+  # --- 6. STANDARDIZED CONVERSIONS ---
+  N_sub_cm2 = N_sub * 1e-4;  
+  print('After one SP loop, N_sub_cm2 and n_s_total: ', N_sub_cm2, np.sum(N_sub_cm2));
+  #return N_sub_cm2, N_total_cm2;
+  return N_sub_cm2, E_sub, psi_sub, phi;
+
+
+Ns_sub_cm2, E_sub, psi_sub, phi = calculate_ns(1.2815);
+Ns_total_cm2 = np.sum(Ns_sub_cm2);
+print(Ns_total_cm2);
+
+# # Treatment for surface states
+
+# for iteration1 in range(60):
+
+#   Ns_sub_cm2, E_sub, psi_sub, phi = calculate_ns(Phi_B0);
+#   Ns_total_cm2 = np.sum(Ns_sub_cm2);
+
+#   Phi_B_new=Ns_total_cm2/(n0_Ni/1.0e4) + Ed_Ni/q;
+#   #Phi_B_new=Ns_total_cm2/(n0(al_mole)/1.0e4) + Ed(al_mole)/q;
+#   if math.isclose(Phi_B0, Phi_B_new, abs_tol=SPSS_tolerance):
+#     print(f"--> SP-Surface state loop converged successfully at iteration {iteration1}!")
+#     print('After final SP-Surface state loop, N_sub_cm2, n_s_total, and Phi_B: ', Ns_sub_cm2, np.sum(Ns_sub_cm2), Phi_B_new)
+#     break;
+#   Phi_B0= Phi_B_new;
+#   print('After one SP-Surface state loop, N_sub_cm2, n_s_total, and Phi_B_new: ', Ns_sub_cm2, np.sum(Ns_sub_cm2), Phi_B_new)
+
+
+print("\n==================================================")
+fig, ax1 = plt.subplots(figsize=(12, 6.5))
+x_nm = x * 1e9  
+print(f"  Simulation Results (Al = {al_mole*100}%, AlGaN = 20nm, GaN = 500nm):")
+
+for i in range(n_sb):
+    psi_scaled = psi_sub[:, i] * 0.2 + (E_sub[i]/q)
+    ax1.plot(x_nm, psi_scaled, lw=2.5, label=f'$\psi_{i}$ ($E_{i}$ = {E_sub[i]/q:.3f} eV)')
+ax1.axvline(x=0, color='black', linestyle='--', alpha=0.5, label='AlGaN/GaN Interface')
+ax1.set_xlabel('Position across Channel (nm)', fontsize=12)
+ax1.set_ylabel('Energy Levels / Wavefunction Amplitude (eV)', fontsize=12)
+
+# Zoom in on the active region (-25nm to 60nm) to see the 2DEG details clearly, 
+# while maintaining the physical 500nm bulk constraints behind the scenes
+ax1.set_xlim(-25, 60)
+ax1.legend(loc='upper left')
+
+# Conduction band conversion to eV
+E_c_final = (Delta_Ec - q * phi) / q 
+E_v_final = E_c_final - E_g_profile
+
+ax2 = ax1.twinx()
+ax2.plot(x_nm, E_c_final, color='tab:red', lw=2.5, alpha=0.7, label='Conduction Band $E_c(x)$')
+ax2.plot(x_nm, E_v_final, color='tab:red', lw=2.5, alpha=0.7, label='Valence Band $E_v(x)$')
+ax2.axhline(y=E_Fermi/q, color='purple', linestyle=':', lw=2, label='Fermi Level $E_F$')
+ax2.set_ylabel('Conduction Band Profile Energy (eV)', color='tab:red', fontsize=12)
+ax2.tick_params(axis='y', labelcolor='tab:red')
+ax2.set_xlim(-25, 60)
+ax2.legend(loc='upper right')
+
+plt.title(f"{X_AlGaN*1e9:.2e}nm AlGaN/500nm GaN Heterostructure Solver ($x_{{Al}}$={al_mole:.2e})\nTotal 2DEG Sheet Density $n_s$ = {Ns_total_cm2:.3e} $\mathrm{{cm}}^{{-2}}$", fontsize=14)
+plt.grid(True, alpha=0.2)
+fig.tight_layout()
+plt.show()
