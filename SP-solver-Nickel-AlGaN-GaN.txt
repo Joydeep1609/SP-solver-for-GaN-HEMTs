@@ -1,3 +1,4 @@
+# Ni-AlGaN-GaN structure, assumed X_AlGaN=25nm
 
 import numpy as np
 import scipy.linalg as la
@@ -13,10 +14,9 @@ eps0 = 8.854e-12         # F/m
 # epsilon = 8.9 * eps0     # F/m (GaN permittivity)
 kB = 1.381e-23           # J/K
 T = 300                  # K
+wf_Ni = 5.15             # Ni work function in eV    4.0-> 4.5
 
-
-al_mole = 0.15;
-
+al_mole = 0.1;
 
 # Number of subbands assumed
 n_sb=5;
@@ -49,14 +49,18 @@ def n0(al_mole):
 def Ed(al_mole):
  return (2*al_mole+0.42)*q;
 
-# Extracted data for Ni/AlGaN/GaN (m=0.1)
+# pre-defined on basis of fitting with experimental data 
+def get_PhiB(al_mole):
+  return 1.41*al_mole + 1.07; # eV
+
+# Extracted data for Ni/AlGaN/GaN (m=0.1): redundant information
 n0_Ni= 0.15e13*1e4; #0.1*1e13*1e4;
 Ed_Ni=0.0148*q; #0.211*q; 
 
 # def get_n_s(Phi_B):
 #  return (Phi_B-Ed_SiN/q) * (n0_SiN);
 
-# Variable
+# Constant
 X_AlGaN = 25e-9;
 
 # --- 2. GRID SETTING ({X}nm AlGaN / 500nm GaN) ---
@@ -81,6 +85,10 @@ epsilon = np.zeros(N);
 epsilon[x <= 0]  = eps(al_mole);
 epsilon[x > 0]  = eps(0);
 
+# difference in Ni/AlGaN work function: needs more investigation
+wf_AlGaN = 4.2-0.22*al_mole; 
+delta_wf =  wf_Ni - wf_AlGaN;
+
 
 # Parameter 2: Meaningful Mole-Dependent Polarization Charge
 # For x = 0.2, sheet charge density is ~ 6.6e12 cm^-2
@@ -100,8 +108,6 @@ max_iter = 1000
 SP_tolerance = 1e-5;         
 SPSS_tolerance = 5e-3;
 mixing_factor = 0.015    # Lowered mixing to stabilize the much wider 500nm GaN channel
-
-Phi_B0= 1.2815 # (in eV) initial guess
 
 def calculate_ns(Phi_B):
   phi = np.zeros(N)        # Electrostatic potential initial guess
@@ -157,7 +163,7 @@ def calculate_ns(Phi_B):
           
       # Dirichlet boundaries: Left surface boundary and deep bulk right side set to 0
       A[0, 0] = 1.0
-      b[0]    = -Phi_B-0.9
+      b[0]    = -Phi_B-delta_wf
       A[-1, -1] = 1.0
       b[-1]   = 0.0
       
@@ -181,11 +187,11 @@ def calculate_ns(Phi_B):
   return N_sub_cm2, E_sub, psi_sub, phi;
 
 
-Ns_sub_cm2, E_sub, psi_sub, phi = calculate_ns(1.2815);
+Ns_sub_cm2, E_sub, psi_sub, phi = calculate_ns(get_PhiB(al_mole));
 Ns_total_cm2 = np.sum(Ns_sub_cm2);
 print(Ns_total_cm2);
 
-# # Treatment for surface states
+# # Treatment for surface states: commented out as SS is not well-defined
 
 # for iteration1 in range(60):
 
@@ -202,37 +208,7 @@ print(Ns_total_cm2);
 #   print('After one SP-Surface state loop, N_sub_cm2, n_s_total, and Phi_B_new: ', Ns_sub_cm2, np.sum(Ns_sub_cm2), Phi_B_new)
 
 
-print("\n==================================================")
-fig, ax1 = plt.subplots(figsize=(12, 6.5))
-x_nm = x * 1e9  
-print(f"  Simulation Results (Al = {al_mole*100}%, AlGaN = 20nm, GaN = 500nm):")
-
-for i in range(n_sb):
-    psi_scaled = psi_sub[:, i] * 0.2 + (E_sub[i]/q)
-    ax1.plot(x_nm, psi_scaled, lw=2.5, label=f'$\psi_{i}$ ($E_{i}$ = {E_sub[i]/q:.3f} eV)')
-ax1.axvline(x=0, color='black', linestyle='--', alpha=0.5, label='AlGaN/GaN Interface')
-ax1.set_xlabel('Position across Channel (nm)', fontsize=12)
-ax1.set_ylabel('Energy Levels / Wavefunction Amplitude (eV)', fontsize=12)
-
-# Zoom in on the active region (-25nm to 60nm) to see the 2DEG details clearly, 
-# while maintaining the physical 500nm bulk constraints behind the scenes
-ax1.set_xlim(-25, 60)
-ax1.legend(loc='upper left')
-
-# Conduction band conversion to eV
-E_c_final = (Delta_Ec - q * phi) / q 
-E_v_final = E_c_final - E_g_profile
-
-ax2 = ax1.twinx()
-ax2.plot(x_nm, E_c_final, color='tab:red', lw=2.5, alpha=0.7, label='Conduction Band $E_c(x)$')
-ax2.plot(x_nm, E_v_final, color='tab:red', lw=2.5, alpha=0.7, label='Valence Band $E_v(x)$')
-ax2.axhline(y=E_Fermi/q, color='purple', linestyle=':', lw=2, label='Fermi Level $E_F$')
-ax2.set_ylabel('Conduction Band Profile Energy (eV)', color='tab:red', fontsize=12)
-ax2.tick_params(axis='y', labelcolor='tab:red')
-ax2.set_xlim(-25, 60)
-ax2.legend(loc='upper right')
-
-plt.title(f"{X_AlGaN*1e9:.2e}nm AlGaN/500nm GaN Heterostructure Solver ($x_{{Al}}$={al_mole:.2e})\nTotal 2DEG Sheet Density $n_s$ = {Ns_total_cm2:.3e} $\mathrm{{cm}}^{{-2}}$", fontsize=14)
+$n_s$ = {Ns_total_cm2:.3e} $\mathrm{{cm}}^{{-2}}$", fontsize=14)
 plt.grid(True, alpha=0.2)
 fig.tight_layout()
 plt.show()
